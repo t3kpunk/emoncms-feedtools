@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python2
 
 import struct, math, os
 #import time as t
@@ -70,8 +70,8 @@ class dbFina(object):
         self.buffer = ''
         return byteswritten
 
-    def write_value(self, meta,  pos,  value):
-        fh = open(meta['datadir']+meta['feedid']+".dat","wb")
+    def write_value(self, meta,  pos,  value, mode='ab'):
+        fh = open(meta['datadir']+meta['feedid']+".dat",mode)
         fh.seek(pos*4)
         self.buffer = struct.pack("f",float(value))
         fh.write(self.buffer)
@@ -80,7 +80,7 @@ class dbFina(object):
     def read_buffer(self, meta,  pos):
         bytesread = 0
         fh = open(meta['datadir']+meta['feedid']+".dat","rb")
-        filechunk = (self.buffer_size/16)
+        filechunk = int(self.buffer_size/16)
         fh.seek(pos)
         while bytesread<self.buffer_size:
             value = fh.read(filechunk)
@@ -133,11 +133,11 @@ class dbFina(object):
 
     def dump_datapoints(self, meta):
         fh = open(meta['datadir']+meta['feedid']+".dat","rb")
-        start_time = meta['start_time']
+        time = meta['start_time']
         for i in range(meta["npoints"]):
             value = struct.unpack("f",fh.read(4))
-            print('%s %s' % (str(start_time),  str(value[0])))
-            start_time = start_time + meta['interval']
+            print('%s %s' % (str(time),  str(value[0])))
+            time = time + meta['interval']
         fh.close()
         #    print(str(t.ctime(float(time)))+' '+str(time)+" "+str(value));
 
@@ -263,7 +263,7 @@ example:
 '''
 
     try:
-        opts, args = getopt.getopt(argv, "p:i:o:d:r:")
+        opts, args = getopt.getopt(argv, "p:i:o:d:r:k:")
     except getopt.error:
         print(usagemsg)
         return -1
@@ -271,7 +271,7 @@ example:
         metalist = []
         meta = meta_out = {}
         feeds = []
-        input=read_dump=dump=output = False
+        kWh=input=read_dump=dump=output = False
         for opt, val in opts:
             if opt == "-d":
                 feedid = val
@@ -288,6 +288,9 @@ example:
             elif opt == "-i":
                 feeds.append(val)
                 input = True
+            elif opt == "-k":
+                feedid = val
+                kWh = True
             else:
                 print("bad option: >" + opt + "<")
                 return -1
@@ -333,7 +336,45 @@ example:
                     fh.close()
         fina.create_meta(meta_out)
 
+    if kWh:
+        meta_in = get_metainfo(feeds[0], dir)
+        time = meta_in['start_time']
+        interval = meta_in['interval']
+        meta_out['datadir'] = dir
+        meta_out['feedid'] = feedid
+        meta_out['interval'] = interval
+        meta_out['start_time'] = meta_in['start_time']
 
+        fina.create_meta(meta_out)
+
+        if remove_temp_feed(meta_out):
+            print('Removing temporary output feed: %s' % (meta_out['feedid']))
+
+        last_time = time
+        kwh = 0
+        pos = 0
+        while pos<meta_in['npoints']:
+            power = fina.read_value(meta_in,  pos)
+            time = time + interval
+            time_elapsed = time - last_time
+            # kWh calculation
+            if not math.isnan(power):
+                # kwh divided by 3600 * 1000
+                kwh_inc = (interval * power) / 3600000.0
+                kwh += kwh_inc
+                last_time = time
+            # only update if last datapoint was less than 600 sec old
+            # this is to reduce the effect of monitor down time on creating
+            # often large kwh readings.
+            elif time_elapsed<600:
+                kwh += kwh_inc
+
+            if pos % 1000 == 0:
+                sys.stdout.write(("Processed: {0:.0f} %          \r").format(((pos*100)/meta_in['npoints'])))
+                sys.stdout.flush()
+
+            fina.write_value(meta_out,  pos,  kwh)
+            pos += 1
 
 # ======================================================================
 if __name__ == "__main__":
